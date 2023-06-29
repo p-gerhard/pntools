@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Tuple
 import pprint
 import sympy as sp
@@ -896,8 +898,8 @@ if __name__ == "__main__":
                 order,
                 pn_src_beam,
                 intensity=intensity,
-                th_0=0.5 * np.pi,
-                ph_0=0.0,
+                th_0=0,
+                ph_0=0,
                 sigma=sig,
             ),
             # Beam spatial position
@@ -913,8 +915,8 @@ if __name__ == "__main__":
                 order,
                 pn_src_beam,
                 intensity=intensity,
-                th_0=np.pi,
-                ph_0=0.5 * np.pi,
+                th_0=0,
+                ph_0=0,
                 sigma=sig,
             ),
             # Beam spatial position
@@ -929,5 +931,5 @@ if __name__ == "__main__":
 # Print coefficients
 pprint_src(order, src_lst)
 
-# code = pn_build_c99_code(order, src_lst)
-# print(code)
+code = pn_build_c99_code(order, src_lst)
+print(code)
