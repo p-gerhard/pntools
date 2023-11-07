@@ -1,25 +1,28 @@
 from __future__ import annotations
 
-from typing import Tuple
 import pprint
-import sympy as sp
+from typing import Tuple
+
 import numpy as np
 import scipy as sc
+import sympy as sp
 from prettytable import PrettyTable
+from scipy import integrate
+from sympy.codegen.ast import float32, float64
 
 C99_NUM_FLUX_RUS_HEADER = """
-void num_flux_rus(const float wL[{n}], 
-                  const float wR[{n}], 
-                  const float vn[{dim}], 
-                  float flux[{n}])
+void num_flux_rus(const {c_dtype} wL[{n}], 
+                  const {c_dtype} wR[{n}], 
+                  const {c_dtype} vn[{dim}], 
+                  {c_dtype} flux[{n}])
 """
 
 C99_SRC_BEAM_BLOCK = """
-void src_beam(const float t, const float x[{dim}], float w[{n}])
+void src_beam(const {c_dtype} t, const {c_dtype} x[{dim}], {c_dtype} w[{n}])
 {{
-    float norm;
-    float c0;
-    float eps = 1e-8F;
+    {c_dtype} norm;
+    {c_dtype} c0;
+    {c_dtype} eps = 1e-8{c_suffix};
     {xyz_blk}
     
     // Source values
@@ -29,23 +32,23 @@ void src_beam(const float t, const float x[{dim}], float w[{n}])
 
 C99_SRC_3D_BEAM_XYZ_BLOCK = """
     // Spatial coefficient for {name}
-    c0 = - 0.5F  / ({sigma_xyz:<6.8f}F * {sigma_xyz:<6.8f}F);
+    c0 = - 0.5{c_suffix}  / ({sigma_xyz:<{precision}}{c_suffix} * {sigma_xyz:<{precision}}{c_suffix});
     
-    norm = (x[0] - {x:<6.8f}F) * (x[0] - {x:<6.8f}F) + 
-           (x[1] - {y:<6.8f}F) * (x[1] - {y:<6.8f}F) +
-           (x[2] - {z:<6.8f}F) * (x[2] - {z:<6.8f}F);
+    norm = (x[0] - {x:<{precision}}{c_suffix}) * (x[0] - {x:<{precision}}{c_suffix}) + 
+           (x[1] - {y:<{precision}}{c_suffix}) * (x[1] - {y:<{precision}}{c_suffix}) +
+           (x[2] - {z:<{precision}}{c_suffix}) * (x[2] - {z:<{precision}}{c_suffix});
 
-    float p{beam_idx} = eps + exp(c0 * norm);
+    {c_dtype} p{beam_idx} = eps + exp(c0 * norm);
 """
 
 C99_SRC_2D_BEAM_XYZ_BLOCK = """
     // Spatial coefficient for {name}
-    c0 = - 0.5F  / ({sigma_xyz:<6.8f}F * {sigma_xyz:<6.8f}F);
+    c0 = - 0.5{c_suffix}  / ({sigma_xyz:<{precision}}{c_suffix} * {sigma_xyz:<{precision}}{c_suffix});
     
-    norm = (x[0] - {x:<6.8f}F) * (x[0] - {x:<6.8f}F) + 
-           (x[1] - {y:<6.8f}F) * (x[1] - {y:<6.8f}F);
+    norm = (x[0] - {x:<{precision}}{c_suffix}) * (x[0] - {x:<{precision}}{c_suffix}) + 
+           (x[1] - {y:<{precision}}{c_suffix}) * (x[1] - {y:<{precision}}{c_suffix});
 
-    float p{beam_idx} = eps + exp(c0 * norm);
+    {c_dtype} p{beam_idx} = eps + exp(c0 * norm);
 """
 
 
@@ -551,7 +554,11 @@ def pn_get_2d_jx_jy(order: int) -> Tuple[sp.Matrix, sp.Matrix]:
     return jx, jy
 
 
-def pn_get_c99_code_num_flux_rus(dim: int, flux: sp.Expr) -> str:
+def pn_get_c99_code_num_flux_rus(
+    dim: int,
+    flux: sp.Expr,
+    c_dtype: str = "float",
+) -> str:
     """
     Generates a C99 function code that computes the numerical flux of Rusanov
     of Pn approximation.
@@ -564,27 +571,36 @@ def pn_get_c99_code_num_flux_rus(dim: int, flux: sp.Expr) -> str:
         str: C99 function code that computes the numerical flux of Rusanov.
     """
 
-    from sympy.codegen.ast import real, float32, Assignment
+    from sympy.codegen.ast import Assignment, float32, float64, real
     from sympy.printing.c import C99CodePrinter
 
     # Convert symbolic expression to numeric
     flux = sp.nsimplify(flux, tolerance=1e-6, rational=False)
     flux = flux.evalf()
 
-    # Create a C99 code printer with type aliases set to 'float32'
-    p = C99CodePrinter(settings={"type_aliases": {real: float32}})
+    if c_dtype == "float":
+        precision = float32
+    else:
+        precision = float64
+
+    # Create a C99 code printer with type aliases set to 'float32' or 'float64'
+    p = C99CodePrinter(settings={"type_aliases": {real: precision}})
 
     # Apply common subexpression elimination algorithm
     sub_exprs, simplified = sp.cse(flux)
 
     # Write C99 function header
-    header = C99_NUM_FLUX_RUS_HEADER.format(n=flux.shape[0], dim=dim)
+    header = C99_NUM_FLUX_RUS_HEADER.format(
+        n=flux.shape[0],
+        dim=dim,
+        c_dtype=c_dtype,
+    )
 
     # Write C99 function's body internal variables
     code = "{\n"
     code += "\n".join(
         [
-            "const float {}".format(p._print(Assignment(var, sub_expr)))
+            "const {} {}".format(c_dtype, p._print(Assignment(var, sub_expr)))
             for var, sub_expr in sub_exprs
         ]
     )
@@ -622,7 +638,7 @@ def pn_get_expr_num_flux_rus(order: int) -> Tuple[str, str]:
     jx, jy, jz = pn_get_3d_jx_jy_jz(order)
 
     # Set maximum wave's speed
-    vmax = 1
+    vmax = sp.symbols("C_WAVE")
 
     wL = sp.Matrix([sp.symbols("{}[{}]".format("wL", k)) for k in range(n)])
     wR = sp.Matrix([sp.symbols("{}[{}]".format("wR", k)) for k in range(n)])
@@ -634,6 +650,7 @@ def pn_get_expr_num_flux_rus(order: int) -> Tuple[str, str]:
     )
 
     # Compute 2D Rusanov numerical flux
+    dim = 2
     dim = 2
     dim = check_dim(dim)
 
@@ -687,12 +704,12 @@ def pn_get_src_proj(order: int, src_func, **kwargs) -> np.array:
     # Buffer for two-dimensional source projection
     dim = 2
     args_2d = (dim, *args)
-    src_proj_2d = np.zeros(pn_get_n_basis_func(dim, order), dtype=np.float32)
+    src_proj_2d = np.zeros(pn_get_n_basis_func(dim, order), dtype=np.float64)
 
     # Buffer for three-dimensional source projection
     dim = 3
     args_3d = (dim, *args)
-    src_proj_3d = np.zeros(pn_get_n_basis_func(dim, order), dtype=np.float32)
+    src_proj_3d = np.zeros(pn_get_n_basis_func(dim, order), dtype=np.float64)
 
     for l in range(order + 1):
         for m in range(-l, l + 1):
@@ -700,22 +717,25 @@ def pn_get_src_proj(order: int, src_func, **kwargs) -> np.array:
             dim = 2
             i = pn_get_lin_idx(dim, l, m)
 
-            src_proj_2d[i], _ = sc.integrate.quad(
+            # WARNING: CHECK COORDINATES TH in [0, PI] and PH in [0. 2PI] ?
+            src_proj_2d[i], _ = integrate.quad(
                 pn_src_proj_2d_real,
                 0.0,
-                2.0 * np.pi,
+                np.pi,
                 args=(l, m, src_func, *args_2d),
             )
 
             # Compute 3D source projection
             dim = 3
             i = pn_get_lin_idx(dim, l, m)
-            src_proj_3d[i], _ = sc.integrate.dblquad(
+
+            # WARNING: CHECK COORDINATES TH in [0, PI] and PH in [0. 2PI] ?
+            src_proj_3d[i], _ = integrate.dblquad(
                 pn_src_proj_3d_real,
                 0.0,
-                2 * np.pi,
-                0.0,
                 np.pi,
+                0.0,
+                2.0 * np.pi,
                 args=(l, m, src_func, *args_3d),
             )
 
@@ -728,16 +748,20 @@ def pn_get_src_proj(order: int, src_func, **kwargs) -> np.array:
     return src_dict
 
 
-def pn_get_c99_code_src_beam(dim, order, src_lst: list[dict]) -> str:
+def pn_get_c99_code_src_beam(
+    dim,
+    order,
+    src_lst: list[dict],
+    c_dtype: str = "float",
+) -> str:
     n = pn_get_n_basis_func(dim, order)
-    # indent = 8 * " "
 
-    # code = C99_SRC_BEAM_HEADER.format(dim=dim, n=n)
-
-    vals_lst = []
-
-    nb_src = len(src_lst)
-
+    if c_dtype == "float":
+        precision = "6.8f"
+        c_suffix = "F"
+    else:
+        precision = "6.17f"
+        c_suffix = ""
     # Spatial C99 block
     if dim == 2:
         tag = "2D"
@@ -756,6 +780,9 @@ def pn_get_c99_code_src_beam(dim, order, src_lst: list[dict]) -> str:
                 y=src.get("y"),
                 z=src.get("z"),
                 beam_idx=k,
+                c_dtype=c_dtype,
+                c_suffix=c_suffix,
+                precision=precision,
             )
             for k, src in enumerate(src_lst)
         ]
@@ -772,7 +799,13 @@ def pn_get_c99_code_src_beam(dim, order, src_lst: list[dict]) -> str:
             t0 = src_lst[i].get("values").get(tag)[j]
 
             # Absolute value is taken since we reinject the sign up front
-            line += " {} {:<6.8f}F * p{}".format(get_sign(t0), abs(t0), i)
+            line += " {} {t0:<{precision}}{suf} * p{}".format(
+                get_sign(t0),
+                i,
+                t0=abs(t0),
+                precision=precision,
+                suf=c_suffix,
+            )
 
         val_blk += "{}{};\n".format(1 * "    ", line)
 
@@ -782,12 +815,15 @@ def pn_get_c99_code_src_beam(dim, order, src_lst: list[dict]) -> str:
         n=n,
         xyz_blk=xyz_blk,
         val_blk=val_blk,
+        c_dtype=c_dtype,
+        c_suffix=c_suffix,
     )
 
     # Write brace closing function's body
     code += "\n\n"
 
     return code
+
 
 def pprint_src(order, src_lst):
     n_max_3d = pn_get_n_basis_func(3, order)
@@ -798,11 +834,10 @@ def pprint_src(order, src_lst):
     col_l_3d, col_m_3d = pn_get_lm(3, n_max_3d)
     col_l_2d, col_m_2d = pn_get_lm(2, n_max_2d)
 
-
     # Cast to int for display
     col_l_2d = [int(val) for val in col_l_2d]
     col_m_2d = [int(val) for val in col_m_2d]
-    
+
     col_l_3d = [int(val) for val in col_l_3d]
     col_m_3d = [int(val) for val in col_m_3d]
 
@@ -811,7 +846,7 @@ def pprint_src(order, src_lst):
     tab_2d.add_column("N", col_n_2d, align="r", valign="t")
     tab_2d.add_column("l", col_l_2d, align="r", valign="t")
     tab_2d.add_column("m", col_m_2d, align="r", valign="t")
-    
+
     # 3D Base array for beam coefficient
     tab_3d = PrettyTable()
     tab_3d.add_column("N", col_n_3d, align="r", valign="t")
@@ -821,10 +856,10 @@ def pprint_src(order, src_lst):
     for src in src_lst:
         col_vals_2d = vals = src.get("values").get("2D").tolist()
         # Set int/float format
-        col_vals_2d = ["{:<6.8f}".format(val) for val in col_vals_2d]
+        col_vals_2d = ["{:<6.8}".format(val) for val in col_vals_2d]
 
         tab_2d.add_column(src.get("name"), col_vals_2d, align="r", valign="t")
-    
+
     print("# 2D coefficients:")
     print(tab_2d)
 
@@ -833,7 +868,7 @@ def pprint_src(order, src_lst):
         col_vals_3d = vals = src.get("values").get("3D").tolist()
 
         # Set float format
-        col_vals_3d = ["{:<6.8f}".format(val) for val in col_vals_3d]
+        col_vals_3d = ["{:<6.8}".format(val) for val in col_vals_3d]
 
         tab_3d.add_column(
             src.get("name"),
@@ -841,38 +876,60 @@ def pprint_src(order, src_lst):
             align="r",
             valign="t",
         )
-        
+
     print("# 3D coefficients:")
     print(tab_3d)
+
 
 def pn_build_c99_code(order: int, src_lst: list[dict]):
     # Generate Rusanov numerical flux
     flux_2d, flux_3d = pn_get_expr_num_flux_rus(order)
 
-    # Write include guard macro
+    # # Write include guard macro
     code = "#ifndef P{order}_CL\n#define P{order}_CL\n\n".format(
         order=order,
     )
 
-    # Write 2D selector macro
-    code += "#ifdef IS_2D\n"
+    code += "#ifdef USE_DOUBLE\n"
+    # Double -Write 2D selector macro
+    code += "\n#ifdef IS_2D\n"
+    # Double - Write 2D source function code
+    code += pn_get_c99_code_src_beam(2, order, src_lst, "double")
 
-    # Write 2D source function code
-    code += pn_get_c99_code_src_beam(2, order, src_lst)
+    # Double - Write 2D Rusanov numerical flux C99 function code
+    code += pn_get_c99_code_num_flux_rus(2, flux_2d, "double")
 
-    # Write 2D Rusanov numerical flux C99 function code
-    code += pn_get_c99_code_num_flux_rus(2, flux_2d)
+    # Double - Write 3D selector macro
+    code += "\n#else\n"
+    # Double - Write 3D source function code
+    code += pn_get_c99_code_src_beam(3, order, src_lst, "double")
 
-    # Write 3D selector macro
+    # Double - Write 3D Rusanov numerical flux C99 function code
+    code += pn_get_c99_code_num_flux_rus(3, flux_3d, "double")
+    # Double - End dimension selector macro
+    code += "\n#endif\n"
+
     code += "\n#else\n"
 
-    # Write 3D source function code
-    code += pn_get_c99_code_src_beam(3, order, src_lst)
+    # Float - Write 2D selector macro
+    code += "\n#ifdef IS_2D\n"
+    # Float - Write 2D source function code
+    code += pn_get_c99_code_src_beam(2, order, src_lst, "float")
 
-    # Write 3D IRusanov numerical flux C99 function code
-    code += pn_get_c99_code_num_flux_rus(3, flux_3d)
+    # Float - Write 2D Rusanov numerical flux C99 function code
+    code += pn_get_c99_code_num_flux_rus(2, flux_2d, "float")
 
-    # End dimension selector macro
+    # Float - Write 3D selector macro
+    code += "\n#else\n"
+    # Float - Write 3D source function code
+    code += pn_get_c99_code_src_beam(3, order, src_lst, "float")
+
+    # Float - Write 2D Rusanov numerical flux C99 function code
+    code += pn_get_c99_code_num_flux_rus(3, flux_3d, "float")
+    # Float - End dimension selector macro
+    code += "\n#endif\n"
+
+    # End float/double selector macro
     code += "\n#endif\n"
 
     # End include guard macro
@@ -889,7 +946,7 @@ if __name__ == "__main__":
     intensity = 1.0
 
     # Velocity part sigma
-    sig = 0.1
+    sig = 0.05
 
     src_lst = [
         {
@@ -899,7 +956,7 @@ if __name__ == "__main__":
                 pn_src_beam,
                 intensity=intensity,
                 th_0=0,
-                ph_0=0,
+                ph_0=0.5 * np.pi,
                 sigma=sig,
             ),
             # Beam spatial position
