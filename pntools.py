@@ -18,7 +18,7 @@ void num_flux_rus(const {c_dtype} wL[{n}],
 """
 
 C99_SRC_BEAM_BLOCK = """
-void src_beam(const {c_dtype} t, const {c_dtype} x[{dim}], {c_dtype} w[{n}])
+void src_beam_{nb_beam}(const {c_dtype} t, const {c_dtype} x[{dim}], {c_dtype} w[{n}])
 {{
     {c_dtype} norm;
     {c_dtype} c0;
@@ -811,6 +811,7 @@ def pn_get_c99_code_src_beam(
 
     # Complete function code
     code = C99_SRC_BEAM_BLOCK.format(
+        nb_beam=len(src_lst),
         dim=dim,
         n=n,
         xyz_blk=xyz_blk,
@@ -881,7 +882,7 @@ def pprint_src(order, src_lst):
     print(tab_3d)
 
 
-def pn_build_c99_code(order: int, src_lst: list[dict]):
+def pn_build_c99_flux_code(order: int, src_lst: list[dict]):
     # Generate Rusanov numerical flux
     flux_2d, flux_3d = pn_get_expr_num_flux_rus(order)
 
@@ -893,47 +894,58 @@ def pn_build_c99_code(order: int, src_lst: list[dict]):
     code += "#ifdef USE_DOUBLE\n"
     # Double -Write 2D selector macro
     code += "\n#ifdef IS_2D\n"
-    # Double - Write 2D source function code
-    code += pn_get_c99_code_src_beam(2, order, src_lst, "double")
-
     # Double - Write 2D Rusanov numerical flux C99 function code
     code += pn_get_c99_code_num_flux_rus(2, flux_2d, "double")
-
     # Double - Write 3D selector macro
     code += "\n#else\n"
-    # Double - Write 3D source function code
-    code += pn_get_c99_code_src_beam(3, order, src_lst, "double")
-
     # Double - Write 3D Rusanov numerical flux C99 function code
     code += pn_get_c99_code_num_flux_rus(3, flux_3d, "double")
     # Double - End dimension selector macro
     code += "\n#endif\n"
-
     code += "\n#else\n"
-
     # Float - Write 2D selector macro
     code += "\n#ifdef IS_2D\n"
-    # Float - Write 2D source function code
-    code += pn_get_c99_code_src_beam(2, order, src_lst, "float")
-
     # Float - Write 2D Rusanov numerical flux C99 function code
     code += pn_get_c99_code_num_flux_rus(2, flux_2d, "float")
-
     # Float - Write 3D selector macro
     code += "\n#else\n"
-    # Float - Write 3D source function code
-    code += pn_get_c99_code_src_beam(3, order, src_lst, "float")
-
     # Float - Write 2D Rusanov numerical flux C99 function code
     code += pn_get_c99_code_num_flux_rus(3, flux_3d, "float")
     # Float - End dimension selector macro
     code += "\n#endif\n"
-
     # End float/double selector macro
     code += "\n#endif\n"
-
     # End include guard macro
     code += "#endif\n"
+
+    return code
+
+
+def pn_build_c99_beam_code(order: int, src_lst: list[dict]):
+    code = "#ifdef USE_DOUBLE\n"
+    # Double -Write 2D selector macro
+    code += "\n#ifdef IS_2D\n"
+    # Double - Write 2D source function code
+    code += pn_get_c99_code_src_beam(2, order, src_lst, "double")
+    # Double - Write 3D selector macro
+    code += "\n#else  // IS_2D\n"
+    # Double - Write 3D source function code
+    code += pn_get_c99_code_src_beam(3, order, src_lst, "double")
+    # Double - End dimension selector macro
+    code += "\n#endif // IS_2D\n"
+    code += "\n#else  // USE_DOUBLE\n"
+    # Float - Write 2D selector macro
+    code += "\n#ifdef IS_2D\n"
+    # Float - Write 2D source function code
+    code += pn_get_c99_code_src_beam(2, order, src_lst, "float")
+    # Float - Write 3D selector macro
+    code += "\n#else  // IS_2D \n"
+    # Float - Write 3D source function code
+    code += pn_get_c99_code_src_beam(3, order, src_lst, "float")
+    # Float - End dimension selector macro
+    code += "\n#endif // IS_2D\n"
+    # End float/double selector macro
+    code += "\n#endif // USE_DOUBLE\n"
 
     return code
 
@@ -948,6 +960,18 @@ if __name__ == "__main__":
     # Velocity part sigma
     sig = 0.05
 
+
+# Print coefficients
+# pprint_src(order, src_lst)
+
+# flux_code = pn_build_c99_flux_code(order, src_lst)
+# print(flux_code)
+
+
+beam_code = ""
+for order in [1, 3, 5, 7, 9, 11]:
+    # # Write include guard macro
+
     src_lst = [
         {
             "name": "beam_0",
@@ -955,8 +979,8 @@ if __name__ == "__main__":
                 order,
                 pn_src_beam,
                 intensity=intensity,
-                th_0=0,
-                ph_0=0.5 * np.pi,
+                th_0=0.5 * np.pi,
+                ph_0=0,
                 sigma=sig,
             ),
             # Beam spatial position
@@ -985,8 +1009,8 @@ if __name__ == "__main__":
         },
     ]
 
-# Print coefficients
-pprint_src(order, src_lst)
+    beam_code += f"#ifdef USE_SPHERICAL_HARMONICS_P{order}\n"
+    beam_code += pn_build_c99_beam_code(order, src_lst)
+    beam_code += f"#endif // USE_SPHERICAL_HARMONICS_P{order}\n"
 
-code = pn_build_c99_code(order, src_lst)
-print(code)
+print(beam_code)
